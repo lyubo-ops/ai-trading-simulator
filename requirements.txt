@@ -1,0 +1,12 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+pydantic==2.9.2
+pandas==2.2.3
+numpy==1.26.4
+scikit-learn==1.5.2
+yfinance==0.2.44
+pytest==8.3.3
+jupyter==1.1.1
+matplotlib==3.9.2

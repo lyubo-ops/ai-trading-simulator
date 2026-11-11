@@ -1,0 +1,108 @@
+```json
+{
+  "request_params": {
+    "ticker": "BTC-USD",
+    "start_date": "2021-01-01",
+    "end_date": "2025-12-31",
+    "initial_capital": 10000.0,
+    "t_buy": 0.60,
+    "t_sell": 0.45,
+    "max_position_pct": 0.25,
+    "max_drawdown_limit": 0.15
+  },
+  "ml_metrics": {
+    "accuracy": 0.568,
+    "precision": 0.584,
+    "recall": 0.549,
+    "f1_score": 0.566
+  },
+  "portfolio_metrics": {
+    "ai_strategy": {
+      "final_equity": 14250.0,
+      "net_return_pct": 42.5,
+      "max_drawdown_pct": 11.2,
+      "sharpe_ratio": 1.38,
+      "win_rate_pct": 58.3,
+      "total_trades": 24,
+      "circuit_breaker_triggered": false
+    },
+    "buy_and_hold": {
+      "final_equity": 13100.0,
+      "net_return_pct": 31.0,
+      "max_drawdown_pct": 28.4,
+      "sharpe_ratio": 0.85
+    }
+  },
+  "equity_curve": [
+    {
+      "date": "2024-01-01",
+      "close_price": 42200.0,
+      "ai_equity_close": 10000.0,
+      "bnh_equity_close": 10000.0,
+      "drawdown_close_pct": 0.0
+    },
+    {
+      "date": "2024-01-02",
+      "close_price": 44950.0,
+      "ai_equity_close": 10155.0,
+      "bnh_equity_close": 10651.6,
+      "drawdown_close_pct": 0.0
+    },
+    {
+      "date": "2024-01-03",
+      "close_price": 42850.0,
+      "ai_equity_close": 10035.2,
+      "bnh_equity_close": 10154.0,
+      "drawdown_close_pct": 1.18
+    },
+    {
+      "date": "2024-01-04",
+      "close_price": 44180.0,
+      "ai_equity_close": 10112.8,
+      "bnh_equity_close": 10469.2,
+      "drawdown_close_pct": 0.42
+    },
+    {
+      "date": "2024-01-05",
+      "close_price": 46200.0,
+      "ai_equity_close": 10225.4,
+      "bnh_equity_close": 10947.8,
+      "drawdown_close_pct": 0.0
+    }
+  ],
+  "audit_logs": [
+    {
+      "signal_date": "2024-01-01",
+      "execution_date": "2024-01-02",
+      "prob_up": 0.68,
+      "action": "BUY",
+      "status": "EXECUTED",
+      "execution_price": 42300.0,
+      "units": 0.05904,
+      "fee_paid": 2.50,
+      "reason": "P(t)=0.68 >= T_buy(0.60); Position size 25% approved by Risk Engine."
+    },
+    {
+      "signal_date": "2024-01-04",
+      "execution_date": "2024-01-05",
+      "prob_up": 0.41,
+      "action": "SELL",
+      "status": "EXECUTED",
+      "execution_price": 44250.0,
+      "units": 0.05904,
+      "fee_paid": 2.61,
+      "reason": "P(t)=0.41 <= T_sell(0.45); Long position closed at Open(t+1)."
+    },
+    {
+      "signal_date": "2024-03-12",
+      "execution_date": "2024-03-13",
+      "prob_up": 0.72,
+      "action": "BUY",
+      "status": "REJECTED_BY_RISK",
+      "execution_price": null,
+      "units": 0.0,
+      "fee_paid": 0.0,
+      "reason": "Max Drawdown circuit breaker active (Drawdown >= 15.0%)."
+    }
+  ]
+}

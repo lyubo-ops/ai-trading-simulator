@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+
+# Node / React (за Калоян)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Локални данни и кеш
+*.sqlite3
+*.log

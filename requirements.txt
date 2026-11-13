@@ -10,3 +10,6 @@ yfinance==0.2.44
 pytest==8.3.3
 jupyter==1.1.1
 matplotlib==3.9.2
+# --- /backend: допълнения за Етап 1 (Исмаил) ---
+pydantic-settings==2.5.2
+httpx==0.27.2

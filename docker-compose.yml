@@ -1,0 +1,30 @@
+# Локален PostgreSQL за /backend.
+# Стартиране:  docker compose up -d db
+# Спиране:     docker compose down          (данните остават във volume-а)
+# Пълно чистене: docker compose down -v
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ai_trading_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trading}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading}
+      POSTGRES_DB: ${POSTGRES_DB:-trading_platform}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trading} -d ${POSTGRES_DB:-trading_platform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata:
+    name: ai_trading_pgdata

@@ -158,6 +158,16 @@ class Settings(BaseSettings):
     # --- Нефункционални изисквания ---------------------------------------------
     max_pipeline_seconds_per_asset: float = Field(default=5.0, gt=0.0)
 
+    # --- CORS (React фронтенд; env: CORS_ORIGINS='["http://localhost:5173"]') ---
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",  # Vite dev server
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",  # Create React App / alternative
+            "http://127.0.0.1:3000",
+        ]
+    )
+
     @model_validator(mode="after")
     def _validate_thresholds(self) -> "Settings":
         if not self.default_t_sell < self.default_t_buy:

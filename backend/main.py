@@ -29,6 +29,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, FastAPI, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -41,7 +42,7 @@ from backend.config import (
     Settings,
     get_settings,
 )
-from backend.database import check_connection, get_session_factory, init_db
+from backend.database import get_session_factory, init_db
 from backend.exceptions import BackendError
 from backend.schemas import (
     AssetInfo,
@@ -168,7 +169,13 @@ router = APIRouter()
 
 @router.get("/health", tags=["system"])
 def health(sf: sessionmaker[Session] = Depends(get_db_session_factory)) -> dict:
-    db_ok = check_connection(sf.kw["bind"])
+    try:
+        with sf() as s:
+            s.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:  # noqa: BLE001
+        logger.exception("Няма връзка с базата данни")
+        db_ok = False
     return {"status": "ok" if db_ok else "degraded", "database": db_ok}
 
 

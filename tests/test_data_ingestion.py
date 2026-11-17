@@ -1,4 +1,4 @@
-"""Етап 2 – Data Ingestion & Validation (без мрежа: yfinance се подменя)."""
+"""Data Ingestion & Validation: непълни пазарни данни, календари, инварианти, кеш (без мрежа)."""
 
 from __future__ import annotations
 
@@ -125,41 +125,76 @@ def test_rows_outside_global_period_are_dropped():
 # ------------------------------------------------------------------------------
 
 
-def test_scenario_a_two_missing_days_forward_filled_from_t_minus_1():
+# Сценариите (а), (b), (c) от документацията се изпълняват и за крипто (дневен календар),
+# и за акция (търговски дни на NYSE).
+SERIES = {"BTC-USD": lambda: crypto_df(periods=30), "AAPL": lambda: stock_df()}
+
+
+@pytest.mark.parametrize("ticker", SERIES)
+def test_scenario_a_two_missing_days_filled_from_t_minus_1_not_t_plus_1(ticker):
     """Сценарий (а): 2 последователни NaN дни -> ffill точно със стойностите от t-1."""
-    raw = with_nan_rows(crypto_df(), [10, 11])
-    clean = validate_and_clean_ohlcv(raw, "BTC-USD")
+    raw = with_nan_rows(SERIES[ticker](), [10, 11])
+    clean = validate_and_clean_ohlcv(raw, ticker)
 
     assert_contract(clean)
     assert len(clean) == len(raw)
-    t_minus_1 = raw.iloc[9]
+    t_minus_1, t_plus_1 = raw.iloc[9], raw.iloc[12]
     for pos in (10, 11):
         filled = clean.iloc[pos]
         for col in PRICES:
-            assert filled[col] == t_minus_1[col]
-        assert filled["volume"] == 0.0  # contracts/CONTRACTS.md §1
-    # Денят след дупката си остава непроменен
-    assert clean.iloc[12]["close"] == raw.iloc[12]["close"]
+            assert filled[col] == t_minus_1[col]      # стойността от t-1 ...
+            assert filled[col] != t_plus_1[col]       # ... и НЕ от t+1 (без bfill)
+        assert filled["volume"] == 0.0                # contracts/CONTRACTS.md §1
+    np.testing.assert_array_equal(clean.iloc[12][PRICES].to_numpy(dtype=float),
+                                  t_plus_1[PRICES].to_numpy())  # t+1 остава непроменен
 
 
-def test_boundary_three_missing_days_forward_filled():
-    raw = with_nan_rows(crypto_df(), [10, 11, 12])
-    clean = validate_and_clean_ohlcv(raw, "BTC-USD")
+@pytest.mark.parametrize("ticker", SERIES)
+def test_scenario_b_boundary_three_missing_days_filled_from_t_minus_1(ticker):
+    """Сценарий (b): точно 3 последователни NaN дни -> граничен случай, минава с ffill."""
+    raw = with_nan_rows(SERIES[ticker](), [10, 11, 12])
+    clean = validate_and_clean_ohlcv(raw, ticker)
+    assert_contract(clean)
     assert len(clean) == len(raw)
     for pos in (10, 11, 12):
         for col in PRICES:
             assert clean.iloc[pos][col] == raw.iloc[9][col]
+            assert clean.iloc[pos][col] != raw.iloc[13][col]
 
 
-def test_scenario_b_four_missing_days_raise():
-    """Сценарий (б): 4 последователни NaN дни -> DataValidationError."""
-    raw = with_nan_rows(crypto_df(), [10, 11, 12, 13])
+@pytest.mark.parametrize("ticker", SERIES)
+def test_scenario_c_four_missing_days_raise_data_validation_error(ticker):
+    """Сценарий (c): 4 последователни NaN дни -> DataValidationError."""
+    raw = with_nan_rows(SERIES[ticker](), [10, 11, 12, 13])
     with pytest.raises(DataValidationError) as exc_info:
-        validate_and_clean_ohlcv(raw, "BTC-USD")
+        validate_and_clean_ohlcv(raw, ticker)
     err = exc_info.value
     assert isinstance(err, ValueError)  # договорът изисква ValueError
     assert err.details["gap_length"] == 4
-    assert err.details["gap_start"] == "2021-01-11"
+    assert err.details["gap_start"] == raw.index[10].strftime("%Y-%m-%d")
+
+
+def test_scenario_c_via_api_returns_422_and_writes_nothing(client, downloader,
+                                                           session_factory):
+    """Сценарий (c) през API-то: HTTP 422, нито MarketData, нито SimulationRun в БД."""
+    from backend.models import SimulationRun
+    from tests.conftest import run_body
+
+    downloader.frame = with_nan_rows(downloader.frame, [200, 201, 202, 203])
+    for response in (client.get("/api/v1/market-data/BTC-USD"),
+                     client.post("/api/v1/simulations/run", json=run_body())):
+        assert response.status_code == 422
+        body = response.json()
+        assert body["error"] == "DataValidationError"
+        assert body["details"]["gap_length"] == 4
+    with session_factory() as s:
+        assert s.scalar(select(func.count()).select_from(MarketData)) == 0
+        assert s.scalar(select(func.count()).select_from(SimulationRun)) == 0
+
+
+def test_scenario_c_three_day_gap_via_api_is_accepted(client, downloader):
+    downloader.frame = with_nan_rows(downloader.frame, [200, 201, 202])
+    assert client.get("/api/v1/market-data/BTC-USD").status_code == 200
 
 
 @pytest.mark.parametrize("column", ["open", "high", "low", "close", "volume"])

@@ -1,19 +1,44 @@
-"""Общи fixtures и фабрики за тестовете на /backend."""
+"""
+Общи fixtures и фабрики за тестовете на /backend.
+
+Тестова база данни (`session_factory`):
+  * по подразбиране – НОВА SQLite база в паметта за всеки тест (StaticPool, за да
+    виждат една и съща база и нишките на FastAPI TestClient);
+  * при зададен `TEST_DATABASE_URL` (напр.
+    postgresql+psycopg2://trading:trading@localhost:5432/trading_platform_test) –
+    реален PostgreSQL: всеки тест работи в една външна транзакция, а COMMIT-ите на
+    приложението стават SAVEPOINT-и (join_transaction_mode="create_savepoint");
+    след теста всичко се връща с ROLLBACK. Използвай ОТДЕЛНА тестова база –
+    схемата се пресъздава в началото на сесията.
+
+Без мрежа: yfinance се подменя с `FakeDownloader`.
+"""
 
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pandas as pd
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from backend.database import create_db_engine, create_session_factory, init_db
+from backend.database import Base, create_session_factory, init_db
 from backend.models import AuditAction, AuditLog, AuditStatus, Phase, SimulationRun
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MOCK_BACKTEST_RESPONSE = REPO_ROOT / "contracts" / "mock_backtest_response.json"
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+API = "/api/v1"
 
 
 def load_contract_json(path: Path) -> dict[str, Any]:
@@ -29,13 +54,107 @@ def load_contract_json(path: Path) -> dict[str, Any]:
     return json.loads("\n".join(lines))
 
 
-@pytest.fixture()
-def session_factory():
-    """Изолирана in-memory SQLite база за всеки тест."""
-    engine = create_db_engine("sqlite+pysqlite:///:memory:", echo=False)
+# ==============================================================================
+# Тестова база данни
+# ==============================================================================
+
+
+def _sqlite_engine() -> Engine:
+    engine = create_engine("sqlite://", poolclass=StaticPool,
+                           connect_args={"check_same_thread": False})
+    event.listen(engine, "connect", lambda conn, _: conn.execute("PRAGMA foreign_keys=ON"))
     init_db(engine)
-    yield create_session_factory(engine)
+    return engine
+
+
+@pytest.fixture(scope="session")
+def pg_engine() -> Iterator[Engine | None]:
+    if not TEST_DATABASE_URL:
+        yield None
+        return
+    engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True,
+                           connect_args={"options": "-c timezone=UTC"})
+    Base.metadata.drop_all(engine)  # чиста схема за всяка тестова сесия
+    init_db(engine)
+    yield engine
     engine.dispose()
+
+
+@pytest.fixture()
+def session_factory(pg_engine) -> Iterator[sessionmaker[Session]]:
+    """Изолирана база за всеки тест (виж docstring-а на модула)."""
+    if pg_engine is None:
+        engine = _sqlite_engine()
+        yield create_session_factory(engine)
+        engine.dispose()
+        return
+
+    connection = pg_engine.connect()
+    outer = connection.begin()
+    yield sessionmaker(bind=connection, autoflush=False, expire_on_commit=False,
+                       join_transaction_mode="create_savepoint")
+    outer.rollback()
+    connection.close()
+
+
+# ==============================================================================
+# Синтетични пазарни данни и подмяна на yfinance
+# ==============================================================================
+
+
+def random_walk(start: str = "2021-01-01", end: str = "2025-12-31", seed: int = 0,
+                freq: str = "D") -> pd.DataFrame:
+    """Детерминиран, OHLC-консистентен геометричен random walk (DatetimeIndex `date`)."""
+    idx = pd.date_range(start, end, freq=freq)
+    rng = np.random.default_rng(seed)
+    close = 100.0 * np.exp(np.cumsum(rng.normal(0.0005, 0.03, len(idx))))
+    open_ = np.concatenate([[100.0], close[:-1]]) * np.exp(rng.normal(0, 0.01, len(idx)))
+    high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.01, len(idx))))
+    low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.01, len(idx))))
+    return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close,
+                         "volume": rng.uniform(1e6, 1e7, len(idx))},
+                        index=pd.DatetimeIndex(idx, name="date"))
+
+
+class FakeDownloader:
+    """Заместител на yfinance: връща фиксиран DataFrame и брои извикванията."""
+
+    def __init__(self, frame: pd.DataFrame) -> None:
+        self.frame = frame
+        self.calls: list[str] = []
+
+    def __call__(self, ticker: str, start: date, end: date) -> pd.DataFrame:
+        self.calls.append(ticker)
+        return self.frame.copy()
+
+
+# ==============================================================================
+# FastAPI клиент
+# ==============================================================================
+
+
+@pytest.fixture()
+def downloader() -> FakeDownloader:
+    return FakeDownloader(random_walk())
+
+
+@pytest.fixture()
+def client(session_factory, downloader) -> Iterator[TestClient]:
+    """TestClient върху тестовата база и фалшивия downloader (без lifespan/init_db)."""
+    from backend.main import app, get_db_session_factory, get_market_data_service
+    from backend.services.data_ingestion import MarketDataService
+
+    app.dependency_overrides[get_db_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_market_data_service] = \
+        lambda: MarketDataService(session_factory, downloader=downloader)
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def run_body(**overrides: Any) -> dict[str, Any]:
+    return {"ticker": "BTC-USD", "start_date": "2021-01-01", "end_date": "2025-12-31",
+            "initial_capital": 10000.0, "t_buy": 0.60, "t_sell": 0.45,
+            "max_position_pct": 0.25, "max_drawdown_limit": 0.15, **overrides}
 
 
 @pytest.fixture(scope="session")

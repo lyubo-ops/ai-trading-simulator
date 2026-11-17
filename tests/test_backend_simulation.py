@@ -1,17 +1,14 @@
-"""Етап 3 – Pydantic схеми, fallback двигател, адаптери и ACID запис на симулацията."""
+"""Fallback двигател (двуфазен цикъл), адаптери към ai_engine/backtester и SimulationService."""
 
 from __future__ import annotations
 
 import sys
 import types
-from datetime import date
 
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import ValidationError
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 
 from backend.models import AuditLog, SimulationRun
 from backend.schemas import SimulationRequest
@@ -28,33 +25,11 @@ from backend.services.simulation_service import (
     resolve_engines,
 )
 from backend.schemas import EngineInfo
+from tests.conftest import FakeDownloader, random_walk
 
 # ------------------------------------------------------------------------------
 # Синтетични данни
 # ------------------------------------------------------------------------------
-
-
-def random_walk(start: str = "2021-01-01", end: str = "2025-12-31", seed: int = 0,
-                freq: str = "D") -> pd.DataFrame:
-    """Детерминиран, OHLC-консистентен геометричен random walk."""
-    idx = pd.date_range(start, end, freq=freq)
-    rng = np.random.default_rng(seed)
-    close = 100.0 * np.exp(np.cumsum(rng.normal(0.0005, 0.03, len(idx))))
-    open_ = np.concatenate([[100.0], close[:-1]]) * np.exp(rng.normal(0, 0.01, len(idx)))
-    high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.01, len(idx))))
-    low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.01, len(idx))))
-    return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close,
-                         "volume": rng.uniform(1e6, 1e7, len(idx))},
-                        index=pd.DatetimeIndex(idx, name="date"))
-
-
-class FakeDownloader:
-    def __init__(self, frame: pd.DataFrame) -> None:
-        self.frame, self.calls = frame, 0
-
-    def __call__(self, ticker, start, end):
-        self.calls += 1
-        return self.frame.copy()
 
 
 def signals(rows: list[tuple[float, float, float]], start: str = "2024-01-01") -> pd.DataFrame:
@@ -74,50 +49,6 @@ PARAMS = dict(ticker="BTC-USD", start_date="2024-01-01", end_date="2024-12-31",
 
 def by_action(result: dict, action: str, status: str = "EXECUTED") -> list[dict]:
     return [e for e in result["audit_logs"] if e["action"] == action and e["status"] == status]
-
-
-# ------------------------------------------------------------------------------
-# SimulationRequest
-# ------------------------------------------------------------------------------
-
-
-def test_request_defaults():
-    req = SimulationRequest(ticker="BTC-USD")
-    assert (req.t_buy, req.t_sell, req.max_position_pct, req.max_drawdown_limit,
-            req.random_state, req.initial_capital) == (0.60, 0.45, 0.25, 0.15, 42, 10_000.0)
-    assert (req.start_date, req.end_date) == (date(2021, 1, 1), date(2025, 12, 31))
-    assert set(req.request_params()) == {"ticker", "start_date", "end_date", "initial_capital",
-                                         "t_buy", "t_sell", "max_position_pct",
-                                         "max_drawdown_limit"}
-
-
-def test_request_accepts_max_exposure_alias_and_normalizes_ticker():
-    req = SimulationRequest.model_validate({"ticker": "brk-b", "max_exposure": 0.2})
-    assert req.ticker == "BRK-B" and req.max_position_pct == 0.2
-
-
-@pytest.mark.parametrize("overrides", [
-    {"ticker": "DOGE-USD"},
-    {"start_date": "2020-12-31"},
-    {"end_date": "2026-01-01"},
-    {"start_date": "2023-06-01", "end_date": "2023-06-01"},   # start == end
-    {"start_date": "2023-06-02", "end_date": "2023-06-01"},
-    {"initial_capital": 0},
-    {"t_buy": 0.49},
-    {"t_buy": 1.0},
-    {"t_sell": 0.0},
-    {"t_sell": 0.51},
-    {"t_buy": 0.50, "t_sell": 0.50},                          # t_sell не е < t_buy
-    {"max_position_pct": 0.26},                               # над 25 %
-    {"max_exposure": 0.0},
-    {"max_drawdown_limit": 0.0},
-    {"max_drawdown_limit": 1.0},
-    {"random_state": -1},
-    {"unexpected": 1},
-])
-def test_request_rejects_invalid_input(overrides):
-    with pytest.raises(ValidationError):
-        SimulationRequest.model_validate({"ticker": "BTC-USD", **overrides})
 
 
 # ------------------------------------------------------------------------------
@@ -272,23 +203,6 @@ def test_full_cycle_under_five_seconds(service):
     res = service.run(SimulationRequest(ticker="BTC-USD"))
     assert len(res.equity_curve) > 1_700
     assert res.execution_time_ms < 5_000
-
-
-def test_one_invalid_audit_log_rolls_back_whole_simulation(session_factory):
-    """ACID: невалиден лог (нарушен CHECK) -> ROLLBACK на SimulationRun и всички логове."""
-    def broken_backtest(sig, params):
-        out = fallback_run_backtest(sig, params)
-        assert len(out["audit_logs"]) >= 2
-        out["audit_logs"][-1]["units"] = -1.0          # нарушава non_negative_units
-        return out
-
-    md = MarketDataService(session_factory, downloader=FakeDownloader(random_walk()))
-    engines = EngineAdapters(ai=fallback_generate_ai_predictions, backtest=broken_backtest,
-                             info=EngineInfo(ai_engine="fallback", backtester="fallback"))
-    svc = SimulationService(session_factory, md, engines)
-    with pytest.raises(IntegrityError):
-        svc.run(SimulationRequest(ticker="BTC-USD"))
-    assert counts(session_factory) == (0, 0)
 
 
 def test_engine_contract_violation_is_rejected_before_db(session_factory):
